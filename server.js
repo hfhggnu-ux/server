@@ -2,6 +2,7 @@
 // รันบน Render เป็น Web Service: Build = npm install, Start = npm start
 const http = require('http');
 const { WebSocketServer } = require('ws');
+const { buildMap, rayBox } = require('./map');
 
 const PORT = process.env.PORT || 10000;
 
@@ -44,6 +45,23 @@ function cleanLook(l) {
   return out;
 }
 
+// ---- แมพ: บ้าน ลัง ต้นไม้ ฯลฯ (ใช้บังกระสุน + ส่งให้เกมสร้าง) ----
+const MAP_SEED = +(process.env.MAP_SEED || 20260930);
+const MAP = buildMap(MAP_SEED);
+const MAP_WIRE = MAP.boxes.map(b => [b.t, b.c, b.x, b.y, b.z, b.sx, b.sy, b.sz]);
+
+function blocked(x, z, m) {
+  return MAP.boxes.some(b => Math.abs(x - b.x) < b.sx / 2 + m && Math.abs(z - b.z) < b.sz / 2 + m);
+}
+function safeSpawn(minR, maxR) {
+  for (let i = 0; i < 60; i++) {
+    const a = Math.random() * Math.PI * 2, d = minR + Math.random() * (maxR - minR);
+    const x = Math.cos(a) * d, z = Math.sin(a) * d;
+    if (!blocked(x, z, 1.3)) return [x, 1, z];
+  }
+  return [(Math.random() - 0.5) * 10, 1, (Math.random() - 0.5) * 10];
+}
+
 let nextId = 1;
 const players = new Map();
 const match = { state: 'lobby', timer: CFG.lobbyWait, zone: { x: 0, z: 0, r: CFG.zoneStart }, startCount: 0 };
@@ -84,9 +102,7 @@ function startMatch() {
   match.startCount = players.size;
   for (const p of players.values()) {
     p.alive = true; p.hp = p.maxHp; p.kills = 0;
-    const a = Math.random() * Math.PI * 2;
-    const d = CFG.spawnRadius * (0.3 + Math.random() * 0.7);
-    teleport(p, [Math.cos(a) * d, 1, Math.sin(a) * d]);
+    teleport(p, safeSpawn(CFG.spawnRadius * 0.3, CFG.spawnRadius));
   }
   broadcast({ t: 'start' });
 }
@@ -117,9 +133,12 @@ function shoot(p, m) {
   if (len < 0.001) return;
   const d = m.d.map(v => v / len);
   p.lastShot = now;
-  broadcast({ t: 'shot', id: p.id, o, d });
 
-  let best = null, bestT = CFG.range;
+  // กระสุนชนสิ่งก่อสร้างก่อน = โดนบัง
+  let wallT = CFG.range;
+  for (const b of MAP.boxes) { const t = rayBox(o, d, b); if (t < wallT) wallT = t; }
+
+  let best = null, bestT = wallT;
   const R = CFG.hitRadius;
   for (const q of players.values()) {
     if (q === p || !q.alive) continue;
@@ -131,6 +150,7 @@ function shoot(p, m) {
     const t = tca - Math.sqrt(R * R - d2);
     if (t < bestT) { bestT = t; best = q; }
   }
+  broadcast({ t: 'shot', id: p.id, o, d, len: r2(best ? bestT : wallT) });
   if (best) {
     damage(best, CFG.damage, p);
     send(p.ws, { t: 'hit', target: best.id, hp: best.hp });
@@ -148,7 +168,7 @@ function handle(p, m) {
     p.maxHp = ANIMALS[p.animal].hp;
     p.hp = p.maxHp;
     players.set(p.id, p);
-    send(p.ws, { t: 'welcome', id: p.id, animal: p.animal, look: p.look, cfg: CFG, animals: ANIMALS, state: match.state });
+    send(p.ws, { t: 'welcome', id: p.id, animal: p.animal, look: p.look, cfg: CFG, animals: ANIMALS, state: match.state, mapSeed: MAP_SEED, map: MAP_WIRE });
     if (match.state === 'lobby') {
       p.alive = true;
       teleport(p, [(Math.random() - 0.5) * 20, 1, (Math.random() - 0.5) * 20]);
