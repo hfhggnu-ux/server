@@ -2,7 +2,7 @@
 // รันบน Render เป็น Web Service: Build = npm install, Start = npm start
 const http = require('http');
 const { WebSocketServer } = require('ws');
-const { buildMap, rayBox } = require('/map');
+const { buildMap, rayBox } = require('./map');
 
 const PORT = process.env.PORT || 10000;
 
