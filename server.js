@@ -215,7 +215,25 @@ function tick(dt) {
   });
 }
 
+// หน้าทดสอบ: เปิด https://<โดเมน>/test เพื่อดูว่า WebSocket ต่อติดไหม
+const TEST_PAGE = `<!doctype html><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<body style="font-family:sans-serif;padding:24px;background:#0d1412;color:#fff">
+<h2>WebSocket test</h2><p id="s">กำลังต่อ...</p>
+<script>
+const s = document.getElementById('s');
+const url = (location.protocol === 'https:' ? 'wss://' : 'ws://') + location.host;
+const w = new WebSocket(url);
+const t = setTimeout(() => { s.textContent = '⏳ ยังไม่ตอบ (เซิร์ฟเวอร์อาจเพิ่งตื่น รอสักครู่แล้วรีเฟรช)'; }, 15000);
+w.onopen = () => { s.textContent = '✅ ต่อติดแล้ว: ' + url; w.send(JSON.stringify({ t: 'join', name: 'WebTest', animal: 'lion' })); };
+w.onmessage = e => { const m = JSON.parse(e.data); if (m.t === 'welcome') { clearTimeout(t); s.textContent = '✅ ต่อติด และเซิร์ฟเวอร์ตอบรับแล้ว (id ' + m.id + ') ใช้ ' + url + ' ใน Net.gd ได้'; w.close(); } };
+w.onerror = () => { clearTimeout(t); s.textContent = '❌ ต่อไม่ติด: ' + url; };
+</script></body>`;
+
 const server = http.createServer((req, res) => {
+  if (req.url === '/test') {
+    res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
+    return res.end(TEST_PAGE);
+  }
   res.writeHead(200, { 'Content-Type': 'text/plain' });
   res.end(req.url === '/health' ? 'ok' : 'Animal BR server');
 });
