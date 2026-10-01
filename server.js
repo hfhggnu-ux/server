@@ -62,6 +62,15 @@ function safeSpawn(minR, maxR) {
   return [(Math.random() - 0.5) * 10, 1, (Math.random() - 0.5) * 10];
 }
 
+// ---- อาวุธ 4 ตระกูล (ตัวเลขต้องตรงกับ WeaponFactory.gd ฝั่งเกม: cd = วินาทีต่อนัด) ----
+const WEAPON_ORDER = ['pistol', 'rifle', 'shotgun', 'sniper'];
+const WEAPONS = {
+  pistol:  { dmg: 18, cd: 0.30, range: 70,  spread: 0.010, pellets: 1 },
+  rifle:   { dmg: 12, cd: 0.11, range: 100, spread: 0.020, pellets: 1 },
+  shotgun: { dmg: 9,  cd: 0.90, range: 32,  spread: 0.070, pellets: 8 },
+  sniper:  { dmg: 70, cd: 1.40, range: 200, spread: 0.000, pellets: 1 },
+};
+
 let nextId = 1;
 const players = new Map();
 const match = { state: 'lobby', timer: CFG.lobbyWait, zone: { x: 0, z: 0, r: CFG.zoneStart }, startCount: 0 };
@@ -124,37 +133,48 @@ function resetLobby() {
 
 function shoot(p, m) {
   if (match.state !== 'playing' || !p.alive) return;
+  const W = WEAPONS[WEAPON_ORDER[p.weapon]];
   const now = Date.now() / 1000;
-  if (now - p.lastShot < CFG.fireCooldown * 0.9) return;
+  if (now - p.lastShot < W.cd * 0.85) return;
   if (!isVec(m.o) || !isVec(m.d)) return;
   const o = m.o;
   if (Math.hypot(o[0] - p.pos[0], o[1] - p.pos[1], o[2] - p.pos[2]) > 4) return;
   const len = Math.hypot(...m.d);
   if (len < 0.001) return;
-  const d = m.d.map(v => v / len);
+  const base = m.d.map(v => v / len);
   p.lastShot = now;
 
-  // กระสุนชนสิ่งก่อสร้างก่อน = โดนบัง
-  let wallT = CFG.range;
-  for (const b of MAP.boxes) { const t = rayBox(o, d, b); if (t < wallT) wallT = t; }
-
-  let best = null, bestT = wallT;
+  const rays = [];
+  const dmgMap = new Map();
   const R = CFG.hitRadius;
-  for (const q of players.values()) {
-    if (q === p || !q.alive) continue;
-    const oc = [q.pos[0] - o[0], q.pos[1] + 1 - o[1], q.pos[2] - o[2]];
-    const tca = dot(oc, d);
-    if (tca < 0) continue;
-    const d2 = dot(oc, oc) - tca * tca;
-    if (d2 > R * R) continue;
-    const t = tca - Math.sqrt(R * R - d2);
-    if (t < bestT) { bestT = t; best = q; }
+  for (let k = 0; k < W.pellets; k++) {
+    let d = base;
+    if (W.spread > 0) {
+      d = base.map(v => v + (Math.random() - 0.5) * 2 * W.spread);
+      const l = Math.hypot(...d); d = d.map(v => v / l);
+    }
+    // กระสุนชนสิ่งก่อสร้างก่อน = โดนบัง
+    let wallT = W.range;
+    for (const b of MAP.boxes) { const t = rayBox(o, d, b); if (t < wallT) wallT = t; }
+    let best = null, bestT = wallT;
+    for (const q of players.values()) {
+      if (q === p || !q.alive) continue;
+      const oc = [q.pos[0] - o[0], q.pos[1] + 1 - o[1], q.pos[2] - o[2]];
+      const tca = dot(oc, d);
+      if (tca < 0) continue;
+      const d2 = dot(oc, oc) - tca * tca;
+      if (d2 > R * R) continue;
+      const t = tca - Math.sqrt(R * R - d2);
+      if (t < bestT) { bestT = t; best = q; }
+    }
+    if (best) dmgMap.set(best, (dmgMap.get(best) || 0) + W.dmg);
+    rays.push([r2(d[0]), r2(d[1]), r2(d[2]), r2(best ? bestT : wallT)]);
   }
-  broadcast({ t: 'shot', id: p.id, o, d, len: r2(best ? bestT : wallT) });
-  if (best) {
-    damage(best, CFG.damage, p);
-    send(p.ws, { t: 'hit', target: best.id, hp: best.hp });
-    send(best.ws, { t: 'hurt', by: p.id, hp: best.hp });
+  broadcast({ t: 'shot', id: p.id, o, w: WEAPON_ORDER[p.weapon], rays });
+  for (const [q, dm] of dmgMap) {
+    damage(q, dm, p);
+    send(p.ws, { t: 'hit', target: q.id, hp: q.hp });
+    send(q.ws, { t: 'hurt', by: p.id, hp: q.hp });
   }
 }
 
@@ -168,7 +188,7 @@ function handle(p, m) {
     p.maxHp = ANIMALS[p.animal].hp;
     p.hp = p.maxHp;
     players.set(p.id, p);
-    send(p.ws, { t: 'welcome', id: p.id, animal: p.animal, look: p.look, cfg: CFG, animals: ANIMALS, state: match.state, mapSeed: MAP_SEED, map: MAP_WIRE });
+    send(p.ws, { t: 'welcome', id: p.id, animal: p.animal, look: p.look, cfg: CFG, animals: ANIMALS, state: match.state, mapSeed: MAP_SEED, map: MAP_WIRE, weapons: WEAPONS });
     if (match.state === 'lobby') {
       p.alive = true;
       teleport(p, [(Math.random() - 0.5) * 20, 1, (Math.random() - 0.5) * 20]);
@@ -196,6 +216,10 @@ function handle(p, m) {
     p.pos = m.p;
     p.ry = Number(m.ry) || 0;
     p.anim = m.a | 0;
+    p.pitch = Math.max(-1.3, Math.min(1.3, Number(m.rp) || 0));
+  } else if (m.t === 'weapon' && p.joined) {
+    const wi = WEAPON_ORDER.indexOf(m.w);
+    if (wi >= 0) p.weapon = wi;
   } else if (m.t === 'shoot' && p.joined) {
     shoot(p, m);
   }
@@ -227,7 +251,7 @@ function tick(dt) {
   for (const p of players.values()) {
     if (!p.alive) continue;
     aliveCount++;
-    s.push([p.id, r2(p.pos[0]), r2(p.pos[1]), r2(p.pos[2]), r2(p.ry), p.anim, Math.ceil(p.hp)]);
+    s.push([p.id, r2(p.pos[0]), r2(p.pos[1]), r2(p.pos[2]), r2(p.ry), p.anim, Math.ceil(p.hp), p.weapon, r2(p.pitch)]);
   }
   broadcast({
     t: 'snap', s, alive: aliveCount, state: match.state, timer: Math.ceil(Math.max(0, match.timer)),
@@ -264,7 +288,7 @@ wss.on('connection', ws => {
   const p = {
     id: nextId++, ws, joined: false, name: 'Player', animal: 'lion', look: cleanLook(null),
     pos: [0, 1, 0], ry: 0, anim: 0, hp: 100, maxHp: 100, alive: false,
-    lastShot: 0, lastState: Date.now(), kills: 0, isAlive: true,
+    lastShot: 0, lastState: Date.now(), kills: 0, isAlive: true, weapon: 1, pitch: 0,
   };
   ws.isAlive = true;
   ws.on('pong', () => { ws.isAlive = true; });
