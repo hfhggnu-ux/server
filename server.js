@@ -63,12 +63,16 @@ function safeSpawn(minR, maxR) {
 }
 
 // ---- อาวุธ 4 ตระกูล (ตัวเลขต้องตรงกับ WeaponFactory.gd ฝั่งเกม: cd = วินาทีต่อนัด) ----
-const WEAPON_ORDER = ['pistol', 'rifle', 'shotgun', 'sniper'];
+const WEAPON_ORDER = ['pistol', 'rifle', 'shotgun', 'sniper', 'sword', 'spartan', 'dagger'];
 const WEAPONS = {
   pistol:  { dmg: 18, cd: 0.30, range: 70,  spread: 0.010, pellets: 1 },
   rifle:   { dmg: 12, cd: 0.11, range: 100, spread: 0.020, pellets: 1 },
   shotgun: { dmg: 9,  cd: 0.90, range: 32,  spread: 0.070, pellets: 8 },
   sniper:  { dmg: 70, cd: 1.40, range: 200, spread: 0.000, pellets: 1 },
+  // อาวุธระยะประชิด: range = ระยะ (เมตร), arc = มุมกวาดรวม (องศา), delay = วินาทีจากเริ่มท่าถึงจังหวะโดน
+  sword:   { melee: true, dmg: 55, cd: 0.80, range: 2.7, arc: 110, delay: 0.30 },                  // ดาบอัศวิน: ฟันกวาดกว้าง แรง ช้า
+  spartan: { melee: true, dmg: 34, cd: 0.45, range: 2.3, arc: 50,  delay: 0.17 },                  // มีดสปาร์ตัน: แทงตรง
+  dagger:  { melee: true, dmg: 17, cd: 0.28, range: 1.7, arc: 75,  delay: 0.10, backstab: true },  // มีดสั้น: เร็ว แทงข้างหลังดาเมจ x2
 };
 
 let nextId = 1;
@@ -131,11 +135,50 @@ function resetLobby() {
   }
 }
 
+function melee(p, m, W) {
+  const dl = Math.hypot(m.d[0], m.d[2]);
+  if (dl < 0.001) return;
+  const dir = [m.d[0] / dl, m.d[2] / dl];
+  broadcast({ t: 'shot', id: p.id, o: p.pos, w: WEAPON_ORDER[p.weapon], rays: [] });
+  setTimeout(() => {
+    if (match.state !== 'playing' || !p.alive) return;
+    const half = Math.cos((W.arc * Math.PI) / 360);
+    for (const q of [...players.values()]) {
+      if (q === p || !q.alive) continue;
+      const vx = q.pos[0] - p.pos[0], vz = q.pos[2] - p.pos[2];
+      const dist = Math.hypot(vx, vz);
+      if (dist > W.range + 0.4 || Math.abs(q.pos[1] - p.pos[1]) > 1.6) continue;
+      const cosang = dist < 0.01 ? 1 : (vx * dir[0] + vz * dir[1]) / dist;
+      if (cosang < half) continue;
+      // กำแพง/สิ่งก่อสร้างคั่นระหว่างกัน = ฟันไม่โดน
+      let wallT = Infinity;
+      if (dist > 0.01) {
+        const o = [p.pos[0], 1.2, p.pos[2]], dd = [vx / dist, 0, vz / dist];
+        for (const b of MAP.boxes) { const t = rayBox(o, dd, b); if (t < wallT) wallT = t; }
+      }
+      if (wallT < dist) continue;
+      let dmg = W.dmg;
+      if (W.backstab) {  // ผู้ถูกแทงหันหลังให้ = ดาเมจ x2
+        const fx = -Math.sin(q.ry), fz = -Math.cos(q.ry);
+        if (fx * dir[0] + fz * dir[1] > 0.5) dmg *= 2;
+      }
+      damage(q, dmg, p);
+      send(p.ws, { t: 'hit', target: q.id, hp: q.hp });
+      send(q.ws, { t: 'hurt', by: p.id, hp: q.hp });
+    }
+  }, W.delay * 1000);
+}
+
 function shoot(p, m) {
   if (match.state !== 'playing' || !p.alive) return;
   const W = WEAPONS[WEAPON_ORDER[p.weapon]];
   const now = Date.now() / 1000;
   if (now - p.lastShot < W.cd * 0.85) return;
+  if (W.melee) {
+    if (!isVec(m.d)) return;
+    p.lastShot = now;
+    return melee(p, m, W);
+  }
   if (!isVec(m.o) || !isVec(m.d)) return;
   const o = m.o;
   if (Math.hypot(o[0] - p.pos[0], o[1] - p.pos[1], o[2] - p.pos[2]) > 4) return;
@@ -316,3 +359,4 @@ setInterval(() => {
 }, 1000 / CFG.tick);
 
 server.listen(PORT, () => console.log('Animal BR server on port', PORT));
+  
