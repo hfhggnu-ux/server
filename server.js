@@ -32,6 +32,7 @@ const ANIMALS = {
   crocodile: { hp: 120, speed: 6.5 },
   rhino:     { hp: 150, speed: 5.8 },
   eagle:     { hp: 80,  speed: 8.5 },
+  tam:       { hp: 95,  speed: 8.0 },   // OC Tam
 };
 
 // ตัวเลือกแต่งตัว (ค่าสูงสุดของแต่ละช่อง) - ต้องตรงกับ AnimalFactory.gd
@@ -359,4 +360,3 @@ setInterval(() => {
 }, 1000 / CFG.tick);
 
 server.listen(PORT, () => console.log('Animal BR server on port', PORT));
-  
