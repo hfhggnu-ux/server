@@ -203,12 +203,14 @@ function shoot(p, m) {
     let best = null, bestT = wallT;
     for (const q of players.values()) {
       if (q === p || !q.alive) continue;
-      const oc = [q.pos[0] - o[0], q.pos[1] + 1 - o[1], q.pos[2] - o[2]];
+  // ย่อตัว = เป้าเตี้ยลงและเล็กลง (ยิงเหนือหัวพลาด / กำแพงเตี้ยบังได้)
+      const cy = q.crouch ? 0.65 : 1.0, rr = q.crouch ? 0.6 : R;
+      const oc = [q.pos[0] - o[0], q.pos[1] + cy - o[1], q.pos[2] - o[2]];
       const tca = dot(oc, d);
       if (tca < 0) continue;
       const d2 = dot(oc, oc) - tca * tca;
-      if (d2 > R * R) continue;
-      const t = tca - Math.sqrt(R * R - d2);
+      if (d2 > rr * rr) continue;
+      const t = tca - Math.sqrt(rr * rr - d2);
       if (t < bestT) { bestT = t; best = q; }
     }
     if (best) dmgMap.set(best, (dmgMap.get(best) || 0) + W.dmg);
@@ -261,6 +263,7 @@ function handle(p, m) {
     p.ry = Number(m.ry) || 0;
     p.anim = m.a | 0;
     p.pitch = Math.max(-1.3, Math.min(1.3, Number(m.rp) || 0));
+    p.crouch = m.c === 1;
   } else if (m.t === 'weapon' && p.joined) {
     const wi = WEAPON_ORDER.indexOf(m.w);
     if (wi >= 0) p.weapon = wi;
@@ -295,7 +298,7 @@ function tick(dt) {
   for (const p of players.values()) {
     if (!p.alive) continue;
     aliveCount++;
-    s.push([p.id, r2(p.pos[0]), r2(p.pos[1]), r2(p.pos[2]), r2(p.ry), p.anim, Math.ceil(p.hp), p.weapon, r2(p.pitch)]);
+    s.push([p.id, r2(p.pos[0]), r2(p.pos[1]), r2(p.pos[2]), r2(p.ry), p.anim, Math.ceil(p.hp), p.weapon, r2(p.pitch), p.crouch ? 1 : 0]);
   }
   broadcast({
     t: 'snap', s, alive: aliveCount, state: match.state, timer: Math.ceil(Math.max(0, match.timer)),
@@ -332,7 +335,7 @@ wss.on('connection', ws => {
   const p = {
     id: nextId++, ws, joined: false, name: 'Player', animal: 'lion', look: cleanLook(null),
     pos: [0, 1, 0], ry: 0, anim: 0, hp: 100, maxHp: 100, alive: false,
-    lastShot: 0, lastState: Date.now(), kills: 0, isAlive: true, weapon: 1, pitch: 0,
+    lastShot: 0, lastState: Date.now(), kills: 0, isAlive: true, weapon: 1, pitch: 0, crouch: false,
   };
   ws.isAlive = true;
   ws.on('pong', () => { ws.isAlive = true; });
