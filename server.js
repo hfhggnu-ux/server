@@ -36,7 +36,7 @@ const ANIMALS = {
 };
 
 // ตัวเลือกแต่งตัว (ค่าสูงสุดของแต่ละช่อง) - ต้องตรงกับ AnimalFactory.gd
-const LOOK_MAX = { skin: 4, color: 7, hat: 4, top: 2, acc: 3 };
+const LOOK_MAX = { skin: 4, color: 7, hat: 4, top: 1, acc: 3 };   // top: 0 ไม่ใส่ / 1 เสื้อกั๊ก (เกราะต้องไปหาในเกม)
 function cleanLook(l) {
   const out = {};
   for (const k in LOOK_MAX) {
@@ -76,6 +76,85 @@ const WEAPONS = {
   dagger:  { melee: true, dmg: 17, cd: 0.28, range: 1.7, arc: 75,  delay: 0.10, backstab: true },  // มีดสั้น: เร็ว แทงข้างหลังดาเมจ x2
 };
 
+// ---- ของที่เก็บได้: กระสุนต่อชนิดปืน + เกราะ 5 เลเวล (ไม่เซฟข้ามเกม: ตาย/ออกเกม/จบแมตช์ = หายหมด) ----
+const AMMO = {                      // start = กระสุนตอนเริ่มแมตช์, max = เก็บได้สูงสุด, pack = ได้ต่อ 1 ชิ้นจากกล่อง
+  pistol:  { start: 15, max: 60,  pack: 12 },
+  rifle:   { start: 30, max: 120, pack: 30 },
+  shotgun: { start: 6,  max: 24,  pack: 8 },
+  sniper:  { start: 4,  max: 20,  pack: 5 },
+};
+const AMMO_ORDER = ['pistol', 'rifle', 'shotgun', 'sniper'];
+const ARMOR = [                     // เลเวล 1-5: red = สัดส่วนดาเมจที่เกราะรับไว้, dur = ความทนทาน (ดาเมจที่รับได้ก่อนพัง)
+  { red: 0.15, dur: 40 }, { red: 0.25, dur: 60 }, { red: 0.35, dur: 80 }, { red: 0.45, dur: 100 }, { red: 0.55, dur: 120 },
+];
+const LOOT_CFG = {
+  emptyChance: 0.15,                // กล่องที่ "ถูกเก็บไปก่อนแล้ว" ตั้งแต่เริ่ม
+  ammoChance: 0.70, armorChance: 0.40,
+  ammoWeights: { pistol: 0.30, rifle: 0.35, shotgun: 0.20, sniper: 0.15 },
+  armorWeights: [0.35, 0.28, 0.20, 0.12, 0.05],
+  reach: 2.8,                       // เมตร
+};
+const LOOT = (MAP.loot || []).map((l, i) => ({ id: i, x: l.x, z: l.z, items: [] }));
+
+function pickWeighted(weights) {
+  let r = Math.random() * (Array.isArray(weights) ? weights.reduce((a, b) => a + b, 0) : Object.values(weights).reduce((a, b) => a + b, 0));
+  const entries = Array.isArray(weights) ? weights.map((w, i) => [i, w]) : Object.entries(weights);
+  for (const [k, w] of entries) { if ((r -= w) <= 0) return k; }
+  return entries[entries.length - 1][0];
+}
+function rollLoot() {
+  for (const b of LOOT) {
+    b.items = [];
+    if (Math.random() < LOOT_CFG.emptyChance) continue;
+    if (Math.random() < LOOT_CFG.ammoChance) { const w = pickWeighted(LOOT_CFG.ammoWeights); b.items.push({ k: 'ammo', w, n: AMMO[w].pack }); }
+    if (Math.random() < LOOT_CFG.armorChance) b.items.push({ k: 'armor', lv: pickWeighted(LOOT_CFG.armorWeights) + 1 });
+    if (b.items.length === 0) b.items.push({ k: 'ammo', w: 'rifle', n: AMMO.rifle.pack });   // ไม่ให้กล่องที่ "ไม่ว่าง" ว่างจริง
+  }
+}
+const lootWire = () => LOOT.map(b => [b.id, b.x, b.z, b.items.length > 0 ? 1 : 0]);
+const lootStateWire = () => LOOT.map(b => [b.id, b.items.length > 0 ? 1 : 0]);
+
+function resetInventory(p) {
+  p.ammo = {}; for (const w of AMMO_ORDER) p.ammo[w] = AMMO[w].start;
+  p.armor = { lv: 0, dur: 0 };
+}
+function sendInv(p) {
+  const A = p.armor.lv > 0 ? ARMOR[p.armor.lv - 1] : { dur: 0 };
+  send(p.ws, { t: 'inv', ammo: p.ammo, armor: { lv: p.armor.lv, dur: Math.ceil(p.armor.dur), max: A.dur } });
+}
+// เกราะรับดาเมจส่วนหนึ่ง (โซนแดงไม่ผ่านเกราะ) ความทนทานลดตามที่รับไว้ หมดแล้วเกราะพัง
+function absorb(p, amt) {
+  if (p.armor.lv <= 0 || p.armor.dur <= 0) return amt;
+  const A = ARMOR[p.armor.lv - 1];
+  const soaked = Math.min(amt * A.red, p.armor.dur);
+  p.armor.dur -= soaked;
+  if (p.armor.dur <= 0.01) { p.armor.lv = 0; p.armor.dur = 0; }
+  sendInv(p);
+  return amt - soaked;
+}
+function tryLoot(p, m) {
+  if (match.state !== 'playing' || !p.alive) return;
+  const b = LOOT[m.id | 0];
+  if (!b || Math.hypot(b.x - p.pos[0], b.z - p.pos[2]) > LOOT_CFG.reach) return;
+  const got = [], left = [];
+  for (const it of b.items) {
+    if (it.k === 'ammo') {
+      const room = AMMO[it.w].max - p.ammo[it.w];
+      if (room <= 0) { left.push(it); continue; }
+      const n = Math.min(room, it.n);
+      p.ammo[it.w] += n; got.push({ k: 'ammo', w: it.w, n });
+      if (n < it.n) left.push({ ...it, n: it.n - n });
+    } else if (it.k === 'armor') {
+      if (it.lv > p.armor.lv || (it.lv === p.armor.lv && p.armor.dur < ARMOR[it.lv - 1].dur)) {
+        p.armor = { lv: it.lv, dur: ARMOR[it.lv - 1].dur }; got.push({ k: 'armor', lv: it.lv });
+      } else left.push(it);
+    }
+  }
+  b.items = left;
+  send(p.ws, { t: 'got', items: got });
+  if (got.length) { sendInv(p); broadcast({ t: 'loot_state', id: b.id, has: left.length > 0 ? 1 : 0 }); }
+}
+
 let nextId = 1;
 const players = new Map();
 const match = { state: 'lobby', timer: CFG.lobbyWait, zone: { x: 0, z: 0, r: CFG.zoneStart }, startCount: 0 };
@@ -101,10 +180,12 @@ function teleport(p, pos) {
 
 function damage(p, amt, killer) {
   if (!p.alive) return;
+  if (killer) amt = absorb(p, amt);
   p.hp -= amt;
   if (p.hp <= 0) {
     p.hp = 0;
     p.alive = false;
+    resetInventory(p); for (const w of AMMO_ORDER) p.ammo[w] = 0; sendInv(p);   // ตาย = ของที่เก็บมาหายหมด
     if (killer) killer.kills++;
     broadcast({ t: 'kill', victim: p.id, killer: killer ? killer.id : 0 });
   }
@@ -112,6 +193,9 @@ function damage(p, amt, killer) {
 
 function startMatch() {
   match.state = 'playing';
+  rollLoot();
+  for (const p of players.values()) { resetInventory(p); sendInv(p); }
+  broadcast({ t: 'loot_reset', boxes: lootStateWire() });
   match.zone = { x: 0, z: 0, r: CFG.zoneStart };
   match.startCount = players.size;
   for (const p of players.values()) {
@@ -129,6 +213,9 @@ function endMatch(winner) {
 
 function resetLobby() {
   match.state = 'lobby';
+  rollLoot();
+  for (const p of players.values()) { resetInventory(p); sendInv(p); }
+  broadcast({ t: 'loot_reset', boxes: lootStateWire() });
   match.timer = CFG.lobbyWait;
   for (const p of players.values()) {
     p.alive = true; p.hp = p.maxHp;
@@ -181,12 +268,15 @@ function shoot(p, m) {
     return melee(p, m, W);
   }
   if (!isVec(m.o) || !isVec(m.d)) return;
+  const wname = WEAPON_ORDER[p.weapon];
+  if (p.ammo[wname] <= 0) { send(p.ws, { t: 'noammo', w: wname }); return; }
   const o = m.o;
   if (Math.hypot(o[0] - p.pos[0], o[1] - p.pos[1], o[2] - p.pos[2]) > 4) return;
   const len = Math.hypot(...m.d);
   if (len < 0.001) return;
   const base = m.d.map(v => v / len);
   p.lastShot = now;
+  p.ammo[wname]--; sendInv(p);   // ลูกซองหักครั้งละ 1 นัด (ไม่ใช่ต่อเม็ด)
 
   const rays = [];
   const dmgMap = new Map();
@@ -234,7 +324,8 @@ function handle(p, m) {
     p.maxHp = ANIMALS[p.animal].hp;
     p.hp = p.maxHp;
     players.set(p.id, p);
-    send(p.ws, { t: 'welcome', id: p.id, animal: p.animal, look: p.look, cfg: CFG, animals: ANIMALS, state: match.state, mapSeed: MAP_SEED, map: MAP_WIRE, weapons: WEAPONS });
+    send(p.ws, { t: 'welcome', id: p.id, animal: p.animal, look: p.look, cfg: CFG, animals: ANIMALS, state: match.state, mapSeed: MAP_SEED, map: MAP_WIRE, weapons: WEAPONS, loot: lootWire(), ammoCfg: AMMO, armorCfg: ARMOR });
+    resetInventory(p); sendInv(p);
     if (match.state === 'lobby') {
       p.alive = true;
       teleport(p, [(Math.random() - 0.5) * 20, 1, (Math.random() - 0.5) * 20]);
@@ -264,6 +355,8 @@ function handle(p, m) {
     p.anim = m.a | 0;
     p.pitch = Math.max(-1.3, Math.min(1.3, Number(m.rp) || 0));
     p.crouch = m.c === 1;
+  } else if (m.t === 'loot' && p.joined) {
+    tryLoot(p, m);
   } else if (m.t === 'weapon' && p.joined) {
     const wi = WEAPON_ORDER.indexOf(m.w);
     if (wi >= 0) p.weapon = wi;
@@ -298,7 +391,7 @@ function tick(dt) {
   for (const p of players.values()) {
     if (!p.alive) continue;
     aliveCount++;
-    s.push([p.id, r2(p.pos[0]), r2(p.pos[1]), r2(p.pos[2]), r2(p.ry), p.anim, Math.ceil(p.hp), p.weapon, r2(p.pitch), p.crouch ? 1 : 0]);
+    s.push([p.id, r2(p.pos[0]), r2(p.pos[1]), r2(p.pos[2]), r2(p.ry), p.anim, Math.ceil(p.hp), p.weapon, r2(p.pitch), p.crouch ? 1 : 0, p.armor.lv]);
   }
   broadcast({
     t: 'snap', s, alive: aliveCount, state: match.state, timer: Math.ceil(Math.max(0, match.timer)),
@@ -335,7 +428,7 @@ wss.on('connection', ws => {
   const p = {
     id: nextId++, ws, joined: false, name: 'Player', animal: 'lion', look: cleanLook(null),
     pos: [0, 1, 0], ry: 0, anim: 0, hp: 100, maxHp: 100, alive: false,
-    lastShot: 0, lastState: Date.now(), kills: 0, isAlive: true, weapon: 1, pitch: 0, crouch: false,
+    lastShot: 0, lastState: Date.now(), kills: 0, isAlive: true, weapon: 1, pitch: 0, crouch: false, ammo: {}, armor: { lv: 0, dur: 0 },
   };
   ws.isAlive = true;
   ws.on('pong', () => { ws.isAlive = true; });
@@ -355,6 +448,7 @@ setInterval(() => {
   }
 }, 30000);
 
+rollLoot();
 let last = Date.now();
 setInterval(() => {
   const now = Date.now();

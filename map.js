@@ -17,6 +17,7 @@ function buildMap(seed) {
   const rnd = mulberry32(seed);
   const R = (a, b) => a + rnd() * (b - a);
   const boxes = [];
+  const loot = [];   // จุดวางกล่องของ (มุมด้านในบ้านฝั่งตรงข้ามประตู)
   const foot = [];
   const CLEAR = 14;   // เขตโล่งกลางแมพ (ล็อบบี้)
   const EDGE = 92;    // ขอบพื้นที่วางของ (โซนเริ่มที่ 100)
@@ -59,6 +60,12 @@ function buildMap(seed) {
       const cz = pz + (back[1] !== 0 ? back[1] * (d / 2 - 1.5) : lat);
       add(1, 0, cx, 0.7, cz, 1.4, 1.4, 1.4);
     }
+    // กล่องของ 2 ใบที่มุมหลังบ้าน
+    for (const k of [-1, 1]) {
+      const lx = back[0] !== 0 ? px + back[0] * (w / 2 - 1.1) : px + k * (w / 2 - 1.1);
+      const lz = back[1] !== 0 ? pz + back[1] * (d / 2 - 1.1) : pz + k * (d / 2 - 1.1);
+      loot.push({ x: r2(lx), z: r2(lz), house: houses });
+    }
     foot.push({ x: px, z: pz, r: rad });
     houses++;
   }
@@ -93,7 +100,7 @@ function buildMap(seed) {
     add(2, 0, x, h / 2, z, 0.8, h, 0.8);
     foot.push({ x, z, r: 1.6 }); n++;
   }
-  return { seed, boxes };
+  return { seed, boxes, loot };
 }
 
 // ยิงรังสีชนกล่อง (slab method) คืนระยะ t หรือ Infinity ถ้าไม่โดน
@@ -115,4 +122,3 @@ function rayBox(o, d, b) {
 }
 
 module.exports = { buildMap, rayBox };
-    
